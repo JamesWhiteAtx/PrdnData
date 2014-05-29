@@ -1,0 +1,450 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Collections;
+using System.Linq;
+using System.Text;
+using System.Data.Common;
+using System.Data.Entity;
+using System.Data.Objects;
+using CST.Prdn.Data;
+
+namespace PrdnTest
+{
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            JobChars();
+            //JobReqWrksht();
+            //NextOrd();
+            //JobList();
+            //RequestList();
+            //NextSerial();
+            //Types();
+            //PoLookup();
+            //DatesTest();
+            //SumTest();
+            //CalTest();
+            //List();
+            //ListAndUpdate();
+            //daty();
+        }
+
+        private static void JobChars()
+        {
+            PrdnEntities PrdnDBContext = new PrdnEntities();
+
+            var jobs = from j in PrdnDBContext.ProductionJobs
+                    //join p in PrdnDBContext.ProdCharVWs on j.ProdCD equals p.ProdCD
+                    .Include("Product.ProdCharVW")
+                    .Include("Product.ProdCompVW")
+                    //.Include("Worksheet.WorksheetCharVW")
+                    //.Include("Worksheet.WorksheetCompVW")
+                    where j.RunID == 51
+                    orderby j.RunSeqNo
+                    select j;
+
+            //ObjectQuery oq1 = (ObjectQuery)jobs;
+            //string s = oq1.ToTraceString();
+            //Console.WriteLine(s);
+
+            foreach (var job in jobs)
+            {
+                Console.WriteLine(job.ID+" "+job.Product.ProdCD+" "+job.Product.ProdCharVW.ColorCodesStr);
+            }
+
+            Console.ReadLine();
+
+        }
+
+        private static void JobReqWrksht()
+        {
+            PrdnEntities PrdnDBContext = new PrdnEntities();
+
+            var jobs = from j in PrdnDBContext.ProductionJobs.Include("Request.Worksheet.WorksheetCharVW").Include("Request.Worksheet.WorksheetCompVW")
+                       orderby j.ID
+                       select j;
+            
+            StringBuilder sb = new StringBuilder();
+            foreach (var job in jobs)
+            {
+                sb.Clear();
+                sb.Append(job.ID);
+                sb.Append(" ");
+                sb.Append(job.ProdCD);
+                Request request = job.Request;
+                if (request != null)
+                {
+                    sb.Append(" ");
+                    sb.Append(request.ID);
+                    Worksheet worksheet = request.Worksheet;
+                    if (worksheet != null) {
+                        sb.Append(" ");
+                        sb.Append(worksheet.ID);
+
+                        WorksheetCharVW worksheetChar = worksheet.WorksheetCharVW;
+                        if (worksheetChar != null)
+                        {
+                            sb.Append(" ");
+                            sb.Append(worksheetChar.ColorCodesStr);
+                        }
+                        WorksheetCompVW worksheetComp = worksheet.WorksheetCompVW;
+                        if (worksheetComp != null)
+                        {
+                            sb.Append(" ");
+                            sb.Append(worksheetComp.AbrevStr);
+                        }
+                    }
+                }
+
+                Console.WriteLine(sb.ToString());
+            }
+            Console.ReadLine();
+        }
+
+        private static void NextOrd()
+        {
+            PrdnEntities PrdnDBContext = new PrdnEntities();
+
+            ProductionOrder ord = PrdnDBContext.NextPrdnOrder();
+
+            Console.WriteLine((ord != null) ? ord.OrderNo : "nada");
+            Console.ReadLine();
+
+        }
+
+        private static IQueryable<CST.Prdn.Data.ProductionJob> JobsForRun(decimal? runID)
+        {
+
+PrdnEntities PrdnDBContext = new PrdnEntities();
+
+            if ((runID == null) || (runID < 1))
+            {
+                return null;
+            }
+            else
+            {
+                return (from j in PrdnDBContext.ProductionJobs
+                        where j.RunID == runID
+                        orderby j.RunSeqNo
+                        select j);
+            }
+        }
+
+        private static int JobsForRunCount(decimal? runID)
+        {
+            if ((runID == null) || (runID < 1))
+            {
+                return 0;
+            }
+            else
+            {
+                return JobsForRun(runID).Count();
+            }
+        }
+
+        private static void JobList()
+        {
+            int jobCount = JobsForRunCount(1);
+        }
+
+        /// <summary>
+        /// //////////////////////////////////////
+        /// </summary>
+        static void RequestList()
+        {
+            PrdnEntities PrdnDBContext = new PrdnEntities();
+
+            List<string> states = new List<string>()
+            {"NEW", "PROCESSING"};
+
+            var requests = from r in PrdnDBContext.Requests
+                           select r;
+
+            requests = from r in requests
+                       where states.Contains(r.StatusStr)
+                       select r;
+
+            var q = from r in requests
+                    orderby r.RequestDt descending
+                    select r.ID
+                    ;
+
+            ObjectQuery oq1 = (ObjectQuery)q;
+            string s = oq1.ToTraceString();
+            
+            Console.WriteLine(s);
+
+            Console.ReadLine();
+        }
+
+        static void NextSerial()
+        {
+            PrdnEntities PrdnDBContext = new PrdnEntities();
+
+            Console.WriteLine(PrdnDBContext.NextSerialStr());
+            Console.ReadLine();
+        }
+
+        static void Types()
+        {
+            PrdnEntities PrdnDBContext = new PrdnEntities();
+
+            var types = from t in PrdnDBContext.ProductionTypes
+                        orderby t.Code
+                        select new
+                        {
+                            Text = t.Code + " " + t.Description,
+                            t.ID
+                        };
+
+
+
+            ObjectQuery oq1 = (ObjectQuery)types;
+            string s = oq1.ToTraceString();
+            Console.WriteLine(s);
+
+            Console.ReadLine();
+        }
+
+        static void PoLookup()
+        {
+            string prdnOrdNo;
+
+            PrdnEntities prdnDbContext = new PrdnEntities();
+            var nextPrdnOrd = from p in prdnDbContext.ProductionOrders
+                    where p.ShipDay > DateTime.Today
+                    group p by 1 into g
+                    select g.Min(x => x.OrderNo);
+
+            prdnOrdNo = nextPrdnOrd.ToList().FirstOrDefault();
+
+            var maxPrdnOrd = from p in prdnDbContext.ProductionOrders
+                              group p by 1 into g
+                              select g.Max(x => x.OrderNo);
+
+            prdnOrdNo = maxPrdnOrd.ToList().FirstOrDefault();
+
+            ObjectQuery oq1 = (ObjectQuery)maxPrdnOrd;
+            string s = oq1.ToTraceString();
+            Console.WriteLine(prdnOrdNo);
+
+            Console.ReadLine();
+        }
+
+        static void DatesTest()
+        {
+            PrdnEntities prdnDB = new PrdnEntities();
+
+            var days = from calDay in prdnDB.CalendarDays
+                       group calDay by 1 into g // Notice here, grouping by a constant value
+                       select new
+                       {
+                           MinDate = g.Min(p => p.CalDay),
+                           MaxDate = g.Max(p => p.CalDay)
+                       };
+
+            ObjectQuery oq2 = (ObjectQuery)days;
+            string s = oq2.ToTraceString();
+            Console.WriteLine(s);
+
+            var dates = days.ToList().FirstOrDefault();
+
+            if (dates != null)
+            {
+
+
+                Console.WriteLine(dates.MinDate.ToShortDateString()
+                    + " " + dates.MaxDate.ToShortDateString());
+            }
+            Console.ReadLine();
+        }
+
+        static void SumTest()
+        {
+            PrdnEntities prdnDB = new PrdnEntities();
+
+            var q = from day in prdnDB.CalendarDays.Include("ShipPrdnOrders").Include("ShipPrdnOrders.Runs")
+                    select day
+                    ;
+                            
+
+            //var l = q.ToList();
+
+            ObjectQuery oq1 = (ObjectQuery)q;
+            string s = oq1.ToTraceString();
+            Console.WriteLine(s);
+
+            foreach (CalendarDay day in q)
+            {
+                Console.WriteLine(day.CalDay.ToShortDateString()
+                    +" "+ day.ShipPrdnOrders.Count()
+                    +" " + day.ShipPrdnOrders.Sum(p => (int?)p.Runs.Count)
+               );
+            }
+
+            Console.ReadLine();
+        }
+
+        public class PrdnCalendarDay
+        {
+            private bool existsInDB;
+
+            public bool ExistsInDB
+            {
+                get { return existsInDB; }
+                set { existsInDB = value; }
+            }
+
+            public DateTime CalDay { get; set; }
+
+            public IEnumerable<CST.Prdn.Data.ProductionOrder> ShipPrdnOrders { get; set; }
+
+            public int TotalRuns { get; set; }
+
+            public bool FutureRunsExist { get; set; }
+
+            public bool ShipDay { get { return !String.IsNullOrEmpty(ShipPrdnOrdNo); } }
+
+            public string ShipPrdnOrdNo
+            {
+                get
+                {
+                    if (ShipPrdnOrders != null)
+                    {
+                        CST.Prdn.Data.ProductionOrder shipPo = ShipPrdnOrders.FirstOrDefault();
+                        if (shipPo != null)
+                        { return shipPo.OrderNo; }
+                    }
+                    return String.Empty;
+                }
+            }
+
+            const string format = "MMMddyyyy";
+            
+            public bool Weekend()
+            {
+                return ((CalDay.DayOfWeek == DayOfWeek.Saturday) || (CalDay.DayOfWeek == DayOfWeek.Sunday));
+            }
+
+        }
+
+        public static IEnumerable DaysInCalendar(DateTime firstDayOfCalendar, DateTime lastDayOfCalendar)
+        {
+            DateTime day = firstDayOfCalendar;
+            while (day.Date <= lastDayOfCalendar)
+            {
+                yield return day.Date;
+                day = day.AddDays(1).Date;
+            }
+        }
+
+        static void CalTest()
+        {
+            DateTime firstDayOfCalendar = new DateTime(2012, 4, 29);
+            DateTime lastDayOfCalendar = new DateTime(2012, 6, 2);
+
+            var daysOfCal = from DateTime day in DaysInCalendar(firstDayOfCalendar, lastDayOfCalendar)
+                            select day;
+
+            PrdnEntities prdnDB = new PrdnEntities();
+
+            // Oraclde ODP.Net generates bad sql for 10g, corelated subquery two levels deep
+            //var dbCalDays = from day in prdnDB.CalendarDays
+            //                where ((day.CalDay >= firstDayOfCalendar) && (day.CalDay <= lastDayOfCalendar))
+            //                orderby day.CalDay
+            //                select new PrdnCalendarDay()
+            //                {
+            //                    ExistsInDB = true,
+            //                    CalDay = day.CalDay,
+            //                    ShipPrdnOrders = day.ShipPrdnOrders,
+            //                    TotalRuns = day.ShipPrdnOrders.Sum(p => (int?)p.Runs.Count) ?? 0
+            //                };
+
+            var dbCalDays = (from day in prdnDB.CalendarDays.Include("ShipPrdnOrders").Include("ShipPrdnOrders.Runs")
+                    select day).ToList();
+                    ;
+
+            List<PrdnCalendarDay> dbPrdnCalDays = new List<PrdnCalendarDay>();
+
+            foreach (var day in dbCalDays)
+	        {
+                dbPrdnCalDays.Add(
+                    new PrdnCalendarDay()
+                    {
+                        ExistsInDB = true,
+                        CalDay = day.CalDay,
+                        ShipPrdnOrders = day.ShipPrdnOrders,
+                        TotalRuns = day.ShipPrdnOrders.Sum(p => (int?)p.Runs.Count) ?? 0
+                    }
+                );
+		 
+	        }
+
+            var prdnCalDays = from d in daysOfCal
+                              join p in dbPrdnCalDays on d equals p.CalDay into outer
+                              from o in outer.DefaultIfEmpty()
+                              select o ?? new PrdnCalendarDay()
+                              {
+                                  ExistsInDB = false,
+                                  CalDay = d,
+                              };
+
+            //ObjectQuery oq2 = (ObjectQuery)prdnCalDays;
+            //s = oq2.ToTraceString();
+            //Console.WriteLine(s);
+            //Console.ReadLine();
+
+            foreach (var prdnCalDay in prdnCalDays)
+            {
+                Console.WriteLine(prdnCalDay.CalDay.ToString());
+            }
+
+            Console.ReadLine();
+        }
+
+        static void List()
+        {
+            using (PrdnEntities ctx = new PrdnEntities())
+            {
+                var q = from x in ctx.ProductionJobs
+                        orderby x.ID descending
+                        //where x.StatusStr == sts
+                        select new
+                        {
+                            x.ID,
+                            x.Product.ProdCD,
+                            x.Product.ProductType.ProdTypeCD,
+                            x.Product.ProductType.Description
+                        };
+
+                ObjectQuery oq = (ObjectQuery)q;
+                string s = oq.ToTraceString();
+                Console.WriteLine(s);
+                Console.ReadLine();
+            }
+        }
+
+        
+        static void daty()
+        {
+            using (PrdnEntities ctx = new PrdnEntities())
+            {
+                var q = from p in ctx.CalendarDays
+                        orderby p.CalDay
+                        select p;
+
+                ObjectQuery oq = (ObjectQuery)q;
+                string s = oq.ToTraceString();
+                Console.WriteLine(s);
+                Console.ReadLine();
+
+                CalendarDay c = new CalendarDay();
+                c.CalDay = DateTime.Today;
+                ctx.CalendarDays.AddObject(c);
+                ctx.SaveChanges();
+            }
+        }
+
+    }
+}

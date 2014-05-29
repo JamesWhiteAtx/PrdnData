@@ -1,0 +1,686 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Data;
+using System.Data.Objects;
+using System.Data.Objects.DataClasses;
+using System.Reflection;
+
+namespace CST.Prdn.Data
+{
+    
+    public partial class PrdnEntities : ObjectContext
+    {
+        public decimal NextSerialDecimal()
+        { 
+            ObjectParameter outparm = new ObjectParameter("v_SERIAL_NUM", typeof(decimal));
+            GetNextPrdnSerial(outparm);
+            return (decimal)outparm.Value;
+        }
+
+        public string NextSerialStr()
+        {
+            decimal d = Decimal.Truncate(NextSerialDecimal());
+            return d.ToString("#");
+        }
+
+        public decimal NextRunSequence(decimal runID)
+        {
+            var m = from j in ProductionJobs
+                         where j.RunID == runID
+                         group j by 1 into g 
+                         select g.Max(x => x.RunSeqNo);
+
+            decimal maxSeq = m.ToList().FirstOrDefault();
+
+            return Decimal.Truncate(maxSeq + 1);
+        }
+
+        public IQueryable<string> NextPrdnOrdNoQry(DateTime? afterDate=null)
+        {
+            if (afterDate == null) { afterDate = DateTime.Today; }
+
+            return from o in ProductionOrders
+                   where o.ShipDay > afterDate
+                   group o by 1 into g
+                   select g.Min(x => x.OrderNo);
+        }
+
+        public string NextPrdnOrdNo(DateTime? afterDate=null)
+        {
+            if (afterDate == null) { afterDate = DateTime.Today; } 
+            
+            return NextPrdnOrdNoQry(afterDate).FirstOrDefault();
+        }
+
+        public ProductionOrder NextPrdnOrder(DateTime? afterDate=null)
+        {
+            if (afterDate == null) { afterDate = DateTime.Today; }
+
+            var nextOrdNo = NextPrdnOrdNoQry(afterDate);
+
+            var nextOrd = from o in ProductionOrders
+                          where nextOrdNo.Contains(o.OrderNo)
+                          select o;
+
+            return nextOrd.FirstOrDefault();
+        }
+
+        //public IQueryable<ProductionRun> NextPrdnRunQry(DateTime? afterDate = null, string prodTypeCD = null)
+        //{
+        //    var nextOrdNo = NextPrdnOrdNoQry(afterDate);
+
+        //    var nextRun = from r in ProductionRuns
+        //                  where nextOrdNo.Contains(r.PrdnOrderNo)
+        //                  select r;
+
+        //    if (prodTypeCD != null)
+        //    {
+        //        nextRun = from r in ProductionRuns
+        //                  where r.PrdnType.ProdTypeCD == prodTypeCD
+        //                  select r;
+        //    }
+
+        //    return nextRun;
+        //}
+
+        //public ProductionRun NextPrdnRun(DateTime? afterDate=null, string prodTypeCD=null)
+        //{
+        //    return NextPrdnRunQry(afterDate, prodTypeCD).FirstOrDefault();
+        //}
+
+        public DefaultUserPrdnRun MakeDefaultUserPrdnRun(decimal userID)
+        {
+            DefaultUserPrdnRun defRun = new DefaultUserPrdnRun();
+
+            var setting = (from s in PrdnUserSettings
+                          where (s.UserID == userID) && (s.DefaultRunID != null)
+                          select new
+                          {
+                              s.UserID,
+                              s.DefaultRun
+                          }).FirstOrDefault();
+
+            if (setting != null)
+            {
+                defRun.UserID = setting.UserID;
+                defRun.DefaultRunID = setting.DefaultRun.ID;
+                defRun.DefaultRunDescr = setting.DefaultRun.RunDescr;
+            }
+            else
+            {
+                defRun.UserID = userID;
+            }
+
+            return defRun;
+        }
+
+        public int SaveDefaultUserPrdnRun(decimal userID, decimal defaultRunID)
+        {
+            PrdnUserSetting setting;
+
+            setting = (from s in PrdnUserSettings
+                       where s.UserID == userID
+                       select s).FirstOrDefault();
+
+            if (setting == null)
+            {
+                setting = new PrdnUserSetting
+                {
+                    UserID = userID
+                };
+            }
+
+            setting.DefaultRunID = defaultRunID;
+
+            if (setting.EntityState == EntityState.Detached)
+            {
+                PrdnUserSettings.AddObject(setting);
+            }
+
+            return SaveChanges();
+        }
+
+        public Worksheet CloneWorksheet(decimal? sourceID, decimal cloneID) 
+        {
+            if (sourceID == null)
+            {
+                return null;
+            }
+
+            Worksheet ws = (from w in Worksheets.Include("WorksheetChars").Include("WorksheetComps")
+                            where w.ID == sourceID
+                            select w).FirstOrDefault();
+
+            if (ws == null)
+            {
+                return null;
+            }
+
+            Worksheet wsClone = (Worksheet)ws.Clone();
+
+            wsClone.ID = cloneID;
+            AddToWorksheets(wsClone);
+
+            foreach (WorksheetChar chr in ws.WorksheetChars)
+            {
+                WorksheetChar chrClone = (WorksheetChar)chr.Clone();
+                chrClone.Worksheet = wsClone;
+                AddToWorksheetChars(chrClone);
+            }
+
+            foreach (WorksheetComp cmp in ws.WorksheetComps)
+            {
+                WorksheetComp cmpClone = (WorksheetComp)cmp.Clone();
+                cmpClone.Worksheet = wsClone;
+                AddToWorksheetComps(cmpClone);
+            }
+
+            return wsClone;
+        }
+
+        public Worksheet CloneReqWorksheet(string requestID, decimal cloneID)
+        {
+            var req = (from r in Requests
+                       where r.ID == requestID
+                       select new {r.WorksheetID}).FirstOrDefault();
+
+            if (req == null)
+            {
+                return null;
+            }
+
+            return CloneWorksheet(req.WorksheetID, cloneID);
+        }
+    }
+    
+    public interface IActiveFlagYN
+    {
+        String ActiveFlag { get; set; }
+    }
+
+    public static class PrdnDataHelper
+    {
+        public const string BoolYNTue = "Y";
+        public const string BoolYNFalse = "N";
+
+        public const string StatusActive = "A";
+        public const string StatusInactive = "I";
+
+        public static bool BoolYN(string asFlag) 
+        {
+            return ((asFlag != null)  && asFlag.Equals(BoolYNTue));
+        }
+
+        public static void SetActive(this IActiveFlagYN obj, bool active)
+        {
+            if (active) { obj.ActiveFlag = BoolYNTue; }
+            else { obj.ActiveFlag = BoolYNFalse; }
+        }
+        public static bool GetActive(this IActiveFlagYN obj)
+        {
+            return obj.ActiveFlag.Equals(BoolYNTue);
+        }
+
+        public const int PrdnCustIDCST = 1;
+        public const int PrdnPriorityIDDefault = 1;
+        public const string LeatherProdCd = "300";
+
+        public const string NToneNormalValCd = "N";
+        public const string MaterialNormalValCd = "N";
+        public const string MaterialLeatherlValCd = "Y";
+        public const string MaterialVinylValCd = "V";
+
+        public const int CstCustIdCst = 1;
+        public const int CstCustIdRW = 2;
+        public const string RWIsisDeptID = "150";
+
+        public static int CustIDFromIsisDept(string isisCustID)
+        {
+            if (String.IsNullOrEmpty(isisCustID))
+            {
+                return 0;
+            }
+            else if (isisCustID == RWIsisDeptID)
+            {
+                return CstCustIdRW;
+            }
+            else
+            {
+                return CstCustIdCst;
+            }
+        }
+
+        public static bool IsEntityKeyProperty(this PropertyInfo property)
+        {
+            object[] attrs = property.GetCustomAttributes(false);
+            foreach (object obj in attrs)
+            {
+                if (obj.GetType() == typeof(EdmScalarPropertyAttribute))
+                {
+                    EdmScalarPropertyAttribute attr = (EdmScalarPropertyAttribute)obj;
+                    if (attr.EntityKeyProperty) {
+                        return true;
+                    }
+                        
+                }
+            }
+            return false;
+        }
+
+        public static EntityObject Clone(this EntityObject Entity)
+        {
+            var type = Entity.GetType();
+            var clone = Activator.CreateInstance(type);
+
+            foreach (PropertyInfo property in type.GetProperties(BindingFlags.GetProperty | BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly | BindingFlags.SetProperty))
+            {
+                if (property.PropertyType.IsGenericType && property.PropertyType.GetGenericTypeDefinition() == typeof(EntityReference<>)) continue;
+                if (property.PropertyType.IsGenericType && property.PropertyType.GetGenericTypeDefinition() == typeof(EntityCollection<>)) continue;
+                if (property.PropertyType.IsSubclassOf(typeof(EntityObject))) continue;
+                //if (property.IsEntityKeyProperty()) continue;
+
+                if (property.CanWrite)
+                {
+                    property.SetValue(clone, property.GetValue(Entity, null), null);
+                }
+            }
+
+            return (EntityObject)clone;
+        }
+
+    }
+    
+    public partial class ProductionMfgr : IActiveFlagYN
+    {
+        public bool Active { get { return this.GetActive();  } set { this.SetActive(value);  }}
+    }
+
+    public partial class ProductionLocation : IActiveFlagYN
+    {
+        public bool Active { get { return this.GetActive(); } set { this.SetActive(value); } }
+    }
+
+    public partial class ProductionReason : IActiveFlagYN
+    {
+        public bool Active { get { return this.GetActive(); } set { this.SetActive(value); } }
+    }
+
+    public partial class ProductionPriority : IActiveFlagYN
+    {
+        public bool Active { get { return this.GetActive(); } set { this.SetActive(value); } }
+    }
+
+    public partial class ProductionCustomer : IActiveFlagYN
+    {
+        public bool Active { get { return this.GetActive(); } set { this.SetActive(value); } }
+    }
+
+    public partial class ProductionType : IActiveFlagYN
+    {
+        public bool Active { get { return this.GetActive(); } set { this.SetActive(value); } }
+    }
+
+    // Production Orders //////////////////////////
+    //[MetadataType(typeof(PrdnOrdViewModel))]
+    public partial class ProductionOrder
+    {
+        public static string IncrementPrdnOrdNo(string prdnOrdNo)
+        {
+            int PoNoInt = Convert.ToInt32(prdnOrdNo);
+            PoNoInt++;
+            return PoNoInt.ToString();
+        }
+    }
+
+    public partial class User : IActiveFlagYN
+    {
+        public bool Active { get { return this.GetActive(); } set { this.SetActive(value); } }
+    }
+
+    // Requests ////////////////////////////////////////////
+
+    public enum RequestState { New, Processing, Confirmed, Canceled };
+
+    public enum RequestSpecWS { S, Y, N };
+
+    public partial class Request
+    {
+        Request()
+        {
+            Status = RequestState.New;
+        }
+
+        public string SoldStockStr
+        {
+            get
+            {
+                if (SoldItemFlag.Equals(PrdnDataHelper.BoolYNTue))
+                {
+                    return "SOLD";
+                }
+                else
+                {
+                    return "STOCK";
+                }
+            }
+        }
+
+        public bool ModifiedKit
+        { 
+            get {
+                return this.ModifiedKitFlag.Equals(PrdnDataHelper.BoolYNTue);
+            }
+        }
+
+        protected static RequestState CalcState(string stateStr)
+        {
+            foreach (RequestState s in Enum.GetValues(typeof(RequestState)))
+            {
+                if (s.ToString().Equals(stateStr))
+                {
+                    return s;
+                }
+            }
+
+            return RequestState.New;
+        }
+
+        public RequestState Status {
+            get {
+                return CalcState(StatusStr); 
+            }
+
+            set { StatusStr = value.ToString(); } 
+        }
+
+        public static RequestSpecWS CalcSpecWS(string specStr)
+        {
+            foreach (RequestSpecWS s in Enum.GetValues(typeof(RequestSpecWS)))
+            {
+                if (s.ToString().Equals(specStr))
+                {
+                    return s;
+                }
+            }
+            return RequestSpecWS.N;
+        }
+
+        public RequestSpecWS SpecialWS
+        {
+            get
+            {
+                return CalcSpecWS(SpecialWSStr);
+            }
+
+            set { SpecialWSStr = value.ToString(); }
+        }
+
+        //[Display(Name = "Special Worksheet Required")]
+        public string SpecialWSDescr
+        {
+            get
+            {
+                if (SpecialWS == RequestSpecWS.S)
+                {
+                    return "Standard";
+                }
+                else if (SpecialWS == RequestSpecWS.Y)
+                {
+                    return "Non-Standard";
+                }
+                else 
+                {
+                    return "No";
+                };
+            }
+        }
+
+        public static TimeSpan CalcElapsed(RequestState status, DateTime requestDt, DateTime? confirmDt, DateTime? cancelDt) 
+        { 
+                DateTime startDt;
+
+                if (status == RequestState.Confirmed)
+                {
+                    startDt = confirmDt ?? DateTime.Now;
+                }
+                else if (status == RequestState.Canceled)
+                {
+                    startDt = cancelDt ?? DateTime.Now;
+                }
+                else 
+                {
+                    startDt = DateTime.Now;
+                }
+
+                return startDt - requestDt;
+        }
+
+        public TimeSpan Elapsed { 
+            get {
+                return CalcElapsed(Status, RequestDt, ConfirmDt, CancelDt) ;
+            } 
+       }
+
+    }
+
+    // Production Runs ////////////////////////////////////////////
+
+    public partial class ProductionRun
+    {
+        public string RunDescr { get { return PrdnOrderNo + PrdnType.Code + " " + PrdnType.Description + " " +
+            PrdnOrder.ShipDay.ToString(System.Globalization.CultureInfo.CurrentCulture.DateTimeFormat.ShortDatePattern); 
+        }}
+    }
+
+    // Production Jobs ////////////////////////////////////////////
+
+    public enum PrdnJobState { New, Scheduled, Started, Completed, Shipped };
+
+    public partial class ProductionJob
+    {
+        public static PrdnJobState CalcState(DateTime? scheduledDt, DateTime? startedDt, DateTime? completedDt, DateTime? shippedDt)
+        {
+            if (shippedDt != null) {
+                return PrdnJobState.Shipped;
+            } else if (completedDt != null) {
+                return PrdnJobState.Completed;
+            } else if (startedDt != null) {
+                return PrdnJobState.Started;
+            } else if (scheduledDt != null) {
+                return PrdnJobState.Scheduled;
+            } else  {
+                return PrdnJobState.New;
+            }
+        }
+
+        public PrdnJobState Status
+        {
+            get
+            {
+                return CalcState(ScheduledDt, StartedDt, CompletedDt, ShippedDt);
+            }
+        }
+
+        public string StatusStr { get { return Status.ToString(); } }
+
+        public string PatternCDStr
+        {
+            get
+            {
+                if ((Product != null) && (Product.LeatherCharVW != null))
+                {
+                    return Product.LeatherCharVW.PatternCD;
+                }
+                else { return null; }
+            }
+        }
+
+        public string ColorCodesStr
+        {
+            get
+            {
+                string mat = null;
+                string colors = null;
+                if ((Product != null) && (Product.LeatherCharVW != null))
+                {
+                    mat = Product.LeatherCharVW.MaterialStr + " ";
+                    colors = Product.LeatherCharVW.ColorDescrStr;
+                }
+                if ((Worksheet != null) && (Worksheet.WorksheetCharVW != null)) 
+                {
+                    colors = Worksheet.WorksheetCharVW.ColorDescrStr;
+                }
+                return mat + colors;
+            }
+        }
+
+        public string DecorAbrevStr
+        {
+            get
+            {
+                if ((Worksheet != null) && (Worksheet.WorksheetCompVW != null))
+                {
+                    return Worksheet.WorksheetCompVW.AbrevStr;
+                }
+                else if ((Product != null) && (Product.LeatherCompVW != null))
+                {
+                    return Product.LeatherCompVW.AbrevStr;
+                }
+                else { return null; }
+            }
+        }
+
+    }
+
+    public partial class DefaultUserPrdnRun
+    {
+        public decimal UserID { get; set; }
+
+        public decimal? DefaultRunID { get; set; }
+
+        public string DefaultRunDescr { get; set; }
+    }
+
+    public static class LeatherChars
+    {
+        public static string ColorCodesStr(string colorCD, string insert1CD, string insert2CD)
+        {
+            StringBuilder builder = new StringBuilder();
+
+            if (!String.IsNullOrEmpty(colorCD))
+            {
+                builder.Append(colorCD);
+            }
+            if (!String.IsNullOrEmpty(insert1CD))
+            {
+                builder.Append(" ");
+                builder.Append(insert1CD);
+            }
+            if (!String.IsNullOrEmpty(insert2CD))
+            {
+                builder.Append(" ");
+                builder.Append(insert2CD);
+            }
+            return builder.ToString();
+        }
+
+        public static int ColorCount(string colorCD, string insert1CD, string insert2CD)
+        {
+            int cnt = 0;
+
+            if (!String.IsNullOrEmpty(colorCD))
+            {
+                cnt++;
+            }
+            if (!String.IsNullOrEmpty(insert1CD))
+            {
+                cnt++;
+            }
+            if (!String.IsNullOrEmpty(insert2CD))
+            {
+                cnt++;
+            }
+
+            return cnt;
+        }
+
+        public static string NToneStr(int colorCount) {
+            if (colorCount > 1)
+            {
+                return colorCount.ToString() + "T";
+            }
+            else { return null; }
+        }
+
+        public static string MaterialStr(string materialCD)
+        { 
+            if (materialCD == PrdnDataHelper.MaterialLeatherlValCd) {
+                return "L";
+            }
+            else if (materialCD == PrdnDataHelper.MaterialVinylValCd) {
+                return "V";
+            } else {return null;}
+        }
+
+        public static string ColorDescrStr(string colorCD, string insert1CD, string insert2CD)
+        {
+            int colorCount = ColorCount(colorCD, insert1CD, insert2CD);
+
+            return String.Join(" ", NToneStr(colorCount), ColorCodesStr(colorCD, insert1CD, insert2CD) );
+        }
+    }
+
+    public static class LeatherComps
+    {
+        public static string AbrevStr(string prodCD600, string prodCD610, string prodCD620, string prodCD630, string prodCD640)
+        {
+            StringBuilder builder = new StringBuilder();
+            if (!string.IsNullOrEmpty(prodCD600))
+            {
+                builder.Append("E");
+            }
+            if (!string.IsNullOrEmpty(prodCD610))
+            {
+                builder.Append("H");
+            }
+            if (!string.IsNullOrEmpty(prodCD620))
+            {
+                builder.Append("P");
+            }
+            if (!string.IsNullOrEmpty(prodCD630))
+            {
+                builder.Append("I");
+            }
+            if (!string.IsNullOrEmpty(prodCD640))
+            {
+                builder.Append("S");
+            }
+            return builder.ToString();
+        }
+    }
+
+    public partial class WorksheetCharVW
+    {
+        public string ColorDescrStr { get { return LeatherChars.ColorDescrStr(ColorCD, Insert1CD, Insert2CD); } }
+    }
+
+    public partial class WorksheetCompVW
+    {
+        public string AbrevStr { get { return LeatherComps.AbrevStr(ProdCD600, ProdCD610, ProdCD620, ProdCD630, ProdCD640); } }
+    }
+
+    public partial class LeatherCharVW
+    {
+        public string ColorDescrStr { get { return LeatherChars.ColorDescrStr(ColorCD, Insert1CD, Insert2CD); } }
+
+        public string MaterialStr { get { return LeatherChars.MaterialStr(MaterialCD); } } 
+    }
+
+    public partial class LeatherCompVW
+    {
+        public string AbrevStr { get { return LeatherComps.AbrevStr(ProdCD600, ProdCD610, ProdCD620, ProdCD630, ProdCD640); } }
+    }
+}
+

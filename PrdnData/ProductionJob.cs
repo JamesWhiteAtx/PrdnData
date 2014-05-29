@@ -1,0 +1,321 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Runtime.Serialization;
+
+namespace CST.Prdn.Data
+{
+    /// <summary>
+    /// Production Job Model Partial
+    /// </summary>
+    public partial class ProductionJob
+    {
+        public ProductionJob() { }
+
+        public ProductionJob(DateTime date, decimal userID)
+            : base()
+        {
+            CreatedDt = date;
+            CreatedUserID = userID;
+        }
+
+        //public static PrdnJobStatus CalcStatusFromDates(DateTime? createdDt, DateTime? scheduledDt, DateTime? processingDt, DateTime? completedDt, DateTime? canceledDt)
+        //{
+        //    if (canceledDt != null)
+        //    {
+        //        return PrdnJobStatus.Canceled;
+        //    }
+        //    else if (completedDt != null)
+        //    {
+        //        return PrdnJobStatus.Completed;
+        //    }
+        //    else if (processingDt != null)
+        //    {
+        //        return PrdnJobStatus.Processing;
+        //    }
+        //    else if (scheduledDt != null)
+        //    {
+        //        return PrdnJobStatus.Scheduled;
+        //    }
+        //    else if (createdDt != null)
+        //    {
+        //        return PrdnJobStatus.Pending;
+        //    }
+        //    else
+        //    {
+        //        return PrdnJobStatus.New;
+        //    }
+        //}
+
+        //public string StatusStr { get { return Status.ToString(); } }
+
+        public PrdnJobStatus Status
+        {
+            get
+            {
+                if (String.IsNullOrWhiteSpace(StatusStr)) {
+                    return PrdnJobStatus.New;    
+                } else {
+                    return StatusStr.ConverToEnum<PrdnJobStatus>();
+                }
+            }
+        }
+
+        protected virtual PrdnJobStatus AllowStatusSkip(PrdnJobStatus curStatus, PrdnJobStatus newStatus, decimal userID, DateTime? date = null)
+        {
+            if ((curStatus == PrdnJobStatus.New) && (newStatus == PrdnJobStatus.Scheduled))
+            {
+                return UpdateStatus(PrdnJobStatus.Pending, userID, date);
+            }
+            else {
+                return curStatus;
+            }
+        }
+
+        public PrdnJobStatus UpdateStatus(PrdnJobStatus newStatus, decimal userID, DateTime? date = null)
+        {
+            DateTime statusDate = date ?? DateTime.Now;
+
+            PrdnJobStatus curStatus = Status;
+
+            if (newStatus == curStatus)
+            {
+                return curStatus;
+            }
+
+            if (newStatus == PrdnJobStatus.New)
+            {
+                throw new PrdnJobStatusException(newStatus);
+            }
+
+            curStatus = AllowStatusSkip(curStatus, newStatus, userID, date);
+
+            AssignStatusInfo(curStatus, newStatus, userID, statusDate);
+
+            StatusStr = newStatus.DbValStr();
+
+            return Status;
+        }
+
+        protected void AssignStatusInfo(PrdnJobStatus curStatus, PrdnJobStatus newStatus, decimal userID, DateTime statusDate)
+        {
+            if (newStatus == PrdnJobStatus.Canceled)
+            {
+                CanceledDt = statusDate;
+                CanceledUserID = userID;
+            }
+            else
+            {
+                if (newStatus == PrdnJobStatus.Pending)
+                {
+                    ClearStatus(PrdnJobStatus.Scheduled);
+                }
+                else
+                {
+                    if ((curStatus != PrdnJobStatus.Canceled) && ((int)newStatus != ((int)curStatus + 1)))
+                    {
+                        throw new PrdnJobStatusException(curStatus, newStatus);
+                    }
+
+                    if (newStatus == PrdnJobStatus.Scheduled)
+                    {
+                        ClearStatus(PrdnJobStatus.Processing);
+                        ScheduledDt = statusDate;
+                        ScheduledUserID = userID;
+                    }
+                    else if (newStatus == PrdnJobStatus.Processing)
+                    {
+                        ClearStatus(PrdnJobStatus.Completed);
+                        ProcessedDt = statusDate;
+                        ProcessedUserID = userID;
+                    }
+                    else if (newStatus == PrdnJobStatus.Completed)
+                    {
+                        CompletedDt = statusDate;
+                        CompletedUserID = userID;
+                    }
+                }
+                ClearStatus(PrdnJobStatus.Canceled);
+            }
+        }
+
+        protected void ClearStatus(PrdnJobStatus status)
+        {
+            if (status == PrdnJobStatus.Scheduled)
+            {
+                ClearStatus(PrdnJobStatus.Processing);
+                ScheduledDt = null;
+                ScheduledUserID = null;
+            }
+            else if (status == PrdnJobStatus.Processing)
+            {
+                ClearStatus(PrdnJobStatus.Completed);
+                ProcessedDt = null;
+                ProcessedUserID = null;
+            }
+            else if (status == PrdnJobStatus.Completed)
+            {
+                CompletedDt = null;
+                CompletedUserID = null;
+            }
+            else if (status == PrdnJobStatus.Canceled)
+            {
+                CanceledDt = null;
+                CanceledUserID = null;
+            }
+            else
+            {
+                throw new PrdnJobStatusException("Job Status " + status.ToString() + "cannot be cleared.");
+            }
+        }
+
+        public static DateTime? GetDateFromStatus(PrdnJobStatus status, 
+            DateTime? createdDt, DateTime? scheduledDt, DateTime? processingDt, DateTime? completedDt, DateTime? canceledDt)
+        {
+            if (status == PrdnJobStatus.Pending)
+            {
+                return createdDt;
+            }
+            else if (status == PrdnJobStatus.Scheduled)
+            {
+                return scheduledDt;
+            }
+            else if (status == PrdnJobStatus.Processing)
+            {
+                return processingDt;
+            }
+            else if (status == PrdnJobStatus.Completed)
+            {
+                return completedDt;
+            }
+            else if (status == PrdnJobStatus.Canceled)
+            {
+                return canceledDt;
+            }
+            else
+            { return null; }
+        }
+
+        public DateTime? StatusDt { get {
+            return GetDateFromStatus(Status, CreatedDt, ScheduledDt, ProcessedDt, CompletedDt, CanceledDt);
+        } }
+
+        public string PatternCDStr
+        {
+            get
+            {
+                string ptrnStr = null;
+                if ((Product != null) && (Product.ProdTypeCD == PrdnDataHelper.LeatherProdTypeCd) && (Product.LeatherCharVW != null))
+                {
+                    ptrnStr = Product.LeatherCharVW.PatternCD;
+                }
+                else if ((Worksheet != null) && (Worksheet.WorksheetCharVW != null))
+                {
+                    ptrnStr = Worksheet.WorksheetCharVW.PatternCD;
+                }
+                return ptrnStr;
+            }
+        }
+
+        public string ColorCodesStr
+        {
+            get
+            {
+                string colors = null;
+                if ((Product != null) && (Product.ProdTypeCD == PrdnDataHelper.LeatherProdTypeCd) && (Product.LeatherCharVW != null))
+                {
+                    colors = Product.LeatherCharVW.ColorCdDisplay;
+                }
+                if ((Worksheet != null) && (Worksheet.WorksheetCharVW != null))
+                {
+                    string wsColors = Worksheet.WorksheetCharVW.ColorCdStr;
+                    colors = SystemExtensions.JoinOnly("/", new string[] { colors, wsColors });
+                }
+                return colors;
+            }
+        }
+
+        public string DecorAbrevStr
+        {
+            get
+            {
+                if ((Worksheet != null) && (Worksheet.WorksheetCompVW != null))
+                {
+                    return Worksheet.WorksheetCompVW.AbrevStr;
+                }
+                else if ((Product != null) && (Product.LeatherCompVW != null))
+                {
+                    return Product.LeatherCompVW.AbrevStr;
+                }
+                else { return null; }
+            }
+        }
+
+        public void AssignWorksheet(Worksheet worksheet)
+        {
+            if (Worksheet != worksheet)
+            {
+                Worksheet = worksheet;
+            }
+            if (Worksheet != null)
+            {
+                Worksheet.ProdCD = ProdCD;
+                Worksheet.ProdSetid = ProdSetid;
+            }
+        }
+
+        public void SetCreatedDt(DateTime createdDt)
+        {
+            PrdnJobStatus status = Status;
+
+            if (status == PrdnJobStatus.Pending)
+            {
+                CreatedDt = createdDt;
+            }
+            else if (status == PrdnJobStatus.Scheduled)
+            {
+                CreatedDt = createdDt;
+                ScheduledDt = createdDt;
+            }
+        }
+
+        public bool DropShip { get { return !String.IsNullOrEmpty(this.DropShipCustID); } }
+    }
+
+    // Production Job Status ////////////////////////////////////////////
+    public enum PrdnJobStatus { New, Pending, Scheduled, Processing, Completed, Canceled };
+
+    [Serializable()]
+    public class PrdnJobStatusException : Exception, ISerializable
+    {
+        public PrdnJobStatusException() : base() { }
+        public PrdnJobStatusException(string message) : base(message) { }
+        public PrdnJobStatusException(string message, System.Exception inner) : base(message, inner) { }
+        public PrdnJobStatusException(SerializationInfo info, StreamingContext context) : base(info, context) { }
+
+        public PrdnJobStatusException(PrdnJobStatus newStatus) :
+            base(String.Format("Status cannot be changed to {0}.", newStatus.ToString())) { }
+        public PrdnJobStatusException(PrdnJobStatus fromStatus, PrdnJobStatus toStatus) :
+            base(String.Format("Status cannot change from {0} to {1}.", fromStatus.ToString(), toStatus.ToString())) { }
+    }
+
+    /// <summary>
+    /// Production Job Extensions
+    /// </summary>
+    public static class PrdnJobStatusHelper
+    {
+        public static string DbValStr(this PrdnJobStatus status)
+        {
+            if (status == PrdnJobStatus.New)
+            {
+                return null;
+            }
+            else
+            {
+                return status.ConvertToString().ToUpper();
+            }
+        }
+
+    }
+}
